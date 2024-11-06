@@ -1,6 +1,6 @@
 description: Ultralytics YOLOv8n model trained on config.yaml
 author: Ultralytics
-date: '2024-11-06T09:17:42.892823'
+date: '2024-11-06T20:10:53.093879'
 version: 8.3.27
 license: AGPL-3.0 License (https://ultralytics.com/license)
 docs: https://docs.ultralytics.com
@@ -11,5 +11,5 @@ imgsz:
 - 640
 - 640
 names:
-  0: botritys
-  1: saludable
+  0: Botrytis
+  1: Saludable

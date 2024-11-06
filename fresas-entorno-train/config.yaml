@@ -1,0 +1,7 @@
+path: 'C:/Users/nicko/Downloads/fresas-entorno-train/datasets'
+train: train/images  
+val: validate/images
+
+names:
+  0: Botrytis
+  1: Saludable
