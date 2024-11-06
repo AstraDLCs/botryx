@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deteccion de botritys con YOLOV8</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs/dist/tf.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #3498db;
+            --secondary-color: #2c3e50;
+            --accent-color: #e74c3c;
+        }
+
+        body, html {
+            height: 100%;
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, var(--secondary-color), var(--primary-color));
+            color: white;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        #header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+
+        .code {
+            background-color: rgba(255,255,255,0.1);
+            padding: 3px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+
+        #main {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            height: 0;
+            padding-bottom: 75%;
+            background-color: #000;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.3);
+        }
+
+        #webcam, #outputCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        #outputCanvas {
+            z-index: 2;
+        }
+
+        .button-container {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            font-size: 1em;
+            background-color: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: background-color 0.3s, transform 0.1s;
+        }
+
+        button:hover {
+            background-color: #c0392b;
+            transform: translateY(-2px);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 2em;
+            }
+
+            #main {
+                padding-bottom: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div id="header">
+            <h1>Deteccion de Botrytis</h1>
+            <p>Modelo: <code class="code">Fresas.tfjs</code>, Tamaño: <code class="code">640x640</code></p>
+        </div>
+        <div id="main">
+            <video id="webcam" autoplay playsinline></video>
+            <canvas id="outputCanvas"></canvas>
+        </div>
+        <div class="button-container">
+            <button id="runInference">Run Inference</button>
+        </div>
+    </div>
+
+    <script>
+        const classNames = {
+            0: "botritys",
+            1: "saludable",
+        };
+
+        const TARGET_WIDTH = 640;
+        const TARGET_HEIGHT = 640;
+        let model;
+        let currentCamera = 'environment';
+
+        async function loadModel() {
+            tf.setBackend('webgl');
+            model = await tf.loadGraphModel('./fresas_web_model/model.json');
+        }
+
+        async function runModel(tensor) {
+            if (!model) await loadModel();
+            return model.predict(tensor);
+        }
+
+        async function processWebcamFrame() {
+            const video = document.getElementById('webcam');
+            const tensor = await webcamToTensor(video);
+            const startTime = performance.now();
+            const predictions = await runModel(tensor);
+            const endTime = performance.now();
+            const inferenceTime = endTime - startTime;
+            console.log(`Inference Time: ${inferenceTime.toFixed(2)} ms`);
+            const detections = processPredictions(predictions, classNames);
+            await drawBoundingBoxes(video, detections);
+        }
+
+        function extractSelectedPredictions(indices, boxes, labels, classNames) {
+            return indices.map(i => {
+                const box = boxes.slice([i, 0], [1, -1]).squeeze().arraySync();
+                const label = labels.slice([i], [1]).arraySync()[0];
+                return { box, label: classNames[label] };
+            });
+        }
+
+        async function webcamToTensor(videoElement) {
+            const canvas = document.createElement('canvas');
+            canvas.width = TARGET_WIDTH;
+            canvas.height = TARGET_HEIGHT;
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            ctx.drawImage(videoElement, 0, 0, TARGET_WIDTH, TARGET_HEIGHT);
+            const imageData = ctx.getImageData(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
+            const tensor = tf.browser.fromPixels(imageData);
+            return tf.cast(tensor, 'float32').div(tf.scalar(255)).expandDims(0);
+        }
+
+        function processPredictions(predictions, classNames) {
+            return tf.tidy(() => {
+                const transRes = predictions.transpose([0, 2, 1]);
+                const boxes = calculateBoundingBoxes(transRes);
+                const [scores, labels] = calculateScoresAndLabels(transRes, classNames);
+                const indices = tf.image.nonMaxSuppression(boxes, scores, predictions.shape[2], 0.45, 0.2).arraySync();
+                return extractSelectedPredictions(indices, boxes, labels, classNames);
+            });
+        }
+
+        function calculateBoundingBoxes(transRes) {
+            const [xCenter, yCenter, width, height] = [
+                transRes.slice([0, 0, 0], [-1, -1, 1]),
+                transRes.slice([0, 0, 1], [-1, -1, 1]),
+                transRes.slice([0, 0, 2], [-1, -1, 1]),
+                transRes.slice([0, 0, 3], [-1, -1, 1])
+            ];
+
+            const topLeftX = tf.sub(xCenter, tf.div(width, 2));
+            const topLeftY = tf.sub(yCenter, tf.div(height, 2));
+            return tf.concat([topLeftX, topLeftY, width, height], 2).squeeze();
+        }
+
+        function calculateScoresAndLabels(transRes, classNames) {
+            const rawScores = transRes.slice([0, 0, 4], [-1, -1, Object.keys(classNames).length]).squeeze(0);
+            return [rawScores.max(1), rawScores.argMax(1)];
+        }
+
+        async function drawBoundingBoxes(imageElement, detections) {
+            const canvas = document.getElementById('outputCanvas');
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            canvas.width = imageElement.videoWidth;
+            canvas.height = imageElement.videoHeight;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const resizeScale = Math.min(TARGET_WIDTH / canvas.width, TARGET_HEIGHT / canvas.height);
+            const dx = (TARGET_WIDTH - canvas.width * resizeScale) / 2;
+            const dy = (TARGET_HEIGHT - canvas.height * resizeScale) / 2;
+
+            detections.forEach(({ box, label }) => {
+                let [topLeftX, topLeftY, width, height] = box;
+                topLeftX = topLeftX / resizeScale - dx / resizeScale;
+                topLeftY = topLeftY / resizeScale - dy / resizeScale;
+                width /= resizeScale;
+                height /= resizeScale;
+
+                ctx.strokeStyle = 'green';
+                ctx.lineWidth = 5;
+                ctx.strokeRect(topLeftX, topLeftY, width, height);
+                ctx.fillStyle = 'blue';
+                ctx.font = '20px Arial';
+                ctx.fillText(label, topLeftX, topLeftY - 7);
+            });
+        }
+
+        async function setupWebcam() {
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                const video = document.getElementById('webcam');
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: currentCamera } });
+                video.srcObject = stream;
+            } else {
+                console.error('getUserMedia is not supported');
+            }
+        }
+
+        document.querySelector('#runInference').addEventListener('click', async () => {
+            await loadModel();
+            await setupWebcam();
+            setInterval(processWebcamFrame, 5);
+        });
+
+    </script>
+</body>
+
+</html>
